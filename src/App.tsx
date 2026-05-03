@@ -10,6 +10,7 @@ import {
   Gamepad2,
   Heart,
   Lightbulb,
+  Loader2,
   Medal,
   Plus,
   Rocket,
@@ -21,6 +22,21 @@ import {
   Wand2,
   X,
 } from 'lucide-react';
+
+// Import Firebase services
+import { 
+  DBEvent, 
+  DBMember, 
+  DBIdea, 
+  subscribeToEvents, 
+  subscribeToMembers, 
+  subscribeToIdeas,
+  addEvent as dbAddEvent,
+  addMember as dbAddMember,
+  addIdea as dbAddIdea,
+  updateIdeaReactions,
+  updateMemberPoints
+} from './lib/db';
 
 type Avatar = {
   id: string;
@@ -37,32 +53,17 @@ type Reaction = {
   count: number;
 };
 
-type Idea = {
+type Idea = DBIdea & {
   id: string;
-  title: string;
-  thought: string;
-  tags: string[];
-  reactions: Reaction[];
-  createdAt: string;
 };
 
-type Member = {
+type Member = DBMember & {
   id: string;
-  name: string;
-  role: string;
-  avatar: Avatar;
-  points: number;
   ideas: Idea[];
-  createdAt: string;
 };
 
-type CreativeEvent = {
+type CreativeEvent = DBEvent & {
   id: string;
-  title: string;
-  brief: string;
-  icon: string;
-  accent: string;
-  createdAt: string;
   members: Member[];
 };
 
@@ -103,18 +104,39 @@ const eventAccents = [
   'from-violet-400 via-purple-600 to-fuchsia-600',
 ];
 
-const makeReactions = (counts: number[] = []) =>
-  reactionSet.map((reaction, index) => ({ ...reaction, count: counts[index] ?? 0 }));
-
-const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-const seedEvents: CreativeEvent[] = [];
+const makeReactions = (): Reaction[] =>
+  reactionSet.map((reaction) => ({ ...reaction, count: 0 }));
 
 const totalIdeaReactions = (idea: Idea) => idea.reactions.reduce((sum, reaction) => sum + reaction.count, 0);
 const memberIdeaCount = (member: Member) => member.ideas.length;
 const eventIdeaCount = (event: CreativeEvent) => event.members.reduce((sum, member) => sum + member.ideas.length, 0);
 const eventReactionCount = (event: CreativeEvent) =>
   event.members.reduce((sum, member) => sum + member.ideas.reduce((ideaSum, idea) => ideaSum + totalIdeaReactions(idea), 0), 0);
+
+// Loading Component
+function LoadingScreen() {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-[#060613]">
+      <motion.div 
+        className="flex flex-col items-center gap-4"
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+      >
+        <motion.div 
+          className="grid h-20 w-20 place-items-center rounded-3xl bg-gradient-to-br from-cyan-300 via-fuchsia-400 to-yellow-300 text-slate-950 shadow-2xl shadow-fuchsia-500/30"
+          animate={{ rotate: [0, 360] }}
+          transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+        >
+          <Gamepad2 className="h-10 w-10" />
+        </motion.div>
+        <div className="flex items-center gap-2 text-white/60">
+          <Loader2 className="h-5 w-5 animate-spin" />
+          <span className="font-display text-lg font-bold">Loading Arena...</span>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
 
 function StatChip({ icon, label, value, color }: { icon: ReactNode; label: string; value: number | string; color: string }) {
   return (
@@ -203,11 +225,8 @@ function Modal({ children, onClose }: { children: ReactNode; onClose: () => void
   );
 }
 
-function Leaderboard({ events, scopedEventId }: { events: CreativeEvent[]; scopedEventId?: string }) {
-  const board = (scopedEventId ? events.filter((event) => event.id === scopedEventId) : events)
-    .flatMap((event) => event.members.map((member) => ({ ...member, eventTitle: event.title })))
-    .sort((a, b) => b.points - a.points)
-    .slice(0, 8);
+function Leaderboard({ members, title }: { members: (Member & { eventTitle?: string })[]; title?: string }) {
+  const sorted = [...members].sort((a, b) => b.points - a.points).slice(0, 8);
 
   return (
     <section className="rounded-[2rem] border border-yellow-300/20 bg-yellow-300/[0.04] p-4 shadow-2xl shadow-yellow-950/20 backdrop-blur-xl">
@@ -216,21 +235,21 @@ function Leaderboard({ events, scopedEventId }: { events: CreativeEvent[]; scope
           <Trophy className="h-6 w-6" />
         </span>
         <div>
-          <h3 className="font-display text-lg font-black uppercase tracking-wide text-yellow-200">Leaderboard</h3>
+          <h3 className="font-display text-lg font-black uppercase tracking-wide text-yellow-200">{title || 'Leaderboard'}</h3>
           <p className="text-sm text-white/45">Points from ideas and reactions</p>
         </div>
       </div>
 
-      {board.length === 0 ? (
+      {sorted.length === 0 ? (
         <div className="rounded-3xl border border-dashed border-white/15 p-8 text-center text-white/45">
           <Trophy className="mx-auto mb-3 h-9 w-9 text-yellow-200/70" />
           No players yet. Create the first folder.
         </div>
       ) : (
         <div className="space-y-2">
-          {board.map((member, index) => (
+          {sorted.map((member, index) => (
             <motion.div
-              key={`${member.id}-${member.eventTitle}`}
+              key={member.id}
               className="flex items-center gap-3 rounded-3xl border border-white/10 bg-white/[0.05] p-3"
               initial={{ opacity: 0, x: -16 }}
               animate={{ opacity: 1, x: 0 }}
@@ -239,12 +258,12 @@ function Leaderboard({ events, scopedEventId }: { events: CreativeEvent[]; scope
               <div className="w-8 text-center">
                 {index === 0 ? <Crown className="mx-auto h-6 w-6 text-yellow-300" /> : index < 3 ? <Medal className="mx-auto h-6 w-6 text-orange-200" /> : <span className="font-display text-sm text-white/45">{index + 1}</span>}
               </div>
-              <div className={`grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br ${member.avatar.gradient} text-2xl shadow-lg ring-1 ${member.avatar.ring}`}>
-                {member.avatar.icon}
+              <div className={`grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br ${member.avatarGradient} text-2xl shadow-lg ring-1 ${member.avatarRing}`}>
+                {member.avatarIcon}
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate font-bold text-white">{member.name}</p>
-                <p className="truncate text-xs text-white/40">{member.eventTitle}</p>
+                {member.eventTitle && <p className="truncate text-xs text-white/40">{member.eventTitle}</p>}
               </div>
               <div className="rounded-2xl bg-black/25 px-3 py-2 text-right">
                 <p className="font-display text-sm font-black text-yellow-200">{member.points}</p>
@@ -313,12 +332,12 @@ function MemberFolder({ member, rank, onOpen }: { member: Member; rank: number; 
       whileTap={{ scale: 0.97 }}
     >
       <div className="folder-card relative aspect-[0.95] overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.06] p-4 shadow-2xl shadow-black/30 backdrop-blur-xl">
-        <div className={`absolute inset-x-4 top-3 h-10 rounded-2xl bg-gradient-to-r ${member.avatar.gradient} opacity-80`} />
+        <div className={`absolute inset-x-4 top-3 h-10 rounded-2xl bg-gradient-to-r ${member.avatarGradient} opacity-80`} />
         <div className="absolute left-6 top-0 h-9 w-28 rounded-t-2xl bg-white/15" />
-        <div className={`absolute -right-12 -top-12 h-36 w-36 rounded-full bg-gradient-to-br ${member.avatar.gradient} opacity-30 blur-2xl`} />
+        <div className={`absolute -right-12 -top-12 h-36 w-36 rounded-full bg-gradient-to-br ${member.avatarGradient} opacity-30 blur-2xl`} />
         <div className="relative grid h-full place-items-center pt-6">
-          <div className={`grid h-24 w-24 place-items-center rounded-[2rem] bg-gradient-to-br ${member.avatar.gradient} text-6xl shadow-2xl ring-2 ${member.avatar.ring} transition group-hover:scale-110 group-hover:rotate-6 sm:h-28 sm:w-28`}>
-            {member.avatar.icon}
+          <div className={`grid h-24 w-24 place-items-center rounded-[2rem] bg-gradient-to-br ${member.avatarGradient} text-6xl shadow-2xl ring-2 ${member.avatarRing} transition group-hover:scale-110 group-hover:rotate-6 sm:h-28 sm:w-28`}>
+            {member.avatarIcon}
           </div>
         </div>
         <div className="absolute bottom-4 left-4 right-4 rounded-3xl border border-white/10 bg-black/35 p-3 backdrop-blur-xl">
@@ -349,10 +368,10 @@ function IdeaOrb({ idea, member, onReact }: { idea: Idea; member: Member; onReac
       initial={{ opacity: 0, y: 18 }}
       animate={{ opacity: 1, y: 0 }}
     >
-      <div className={`absolute -right-14 -top-14 h-36 w-36 rounded-full bg-gradient-to-br ${member.avatar.gradient} opacity-20 blur-2xl`} />
+      <div className={`absolute -right-14 -top-14 h-36 w-36 rounded-full bg-gradient-to-br ${member.avatarGradient} opacity-20 blur-2xl`} />
       <div className="relative flex items-start gap-3">
-        <div className={`grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br ${member.avatar.gradient} text-2xl ring-1 ${member.avatar.ring}`}>
-          {member.avatar.icon}
+        <div className={`grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br ${member.avatarGradient} text-2xl ring-1 ${member.avatarRing}`}>
+          {member.avatarIcon}
         </div>
         <div className="min-w-0 flex-1">
           <h4 className="font-display text-lg font-black leading-tight text-white">{idea.title}</h4>
@@ -377,7 +396,7 @@ function IdeaOrb({ idea, member, onReact }: { idea: Idea; member: Member; onReac
         </div>
         <div className="h-3 overflow-hidden rounded-full bg-white/10">
           <motion.div
-            className={`h-full rounded-full bg-gradient-to-r ${member.avatar.gradient}`}
+            className={`h-full rounded-full bg-gradient-to-r ${member.avatarGradient}`}
             initial={{ width: 0 }}
             animate={{ width: `${impression}%` }}
             transition={{ duration: 0.6 }}
@@ -405,17 +424,25 @@ function IdeaOrb({ idea, member, onReact }: { idea: Idea; member: Member; onReac
   );
 }
 
-function CreateEventModal({ onClose, onCreate }: { onClose: () => void; onCreate: (event: CreativeEvent) => void }) {
+function CreateEventModal({ onClose, onCreate }: { onClose: () => void; onCreate: (event: Omit<DBEvent, 'id' | 'createdAt'>) => void }) {
   const [title, setTitle] = useState('');
   const [brief, setBrief] = useState('');
   const [icon, setIcon] = useState('🎮');
   const [accent, setAccent] = useState(eventAccents[0]);
+  const [loading, setLoading] = useState(false);
   const icons = ['🎮', '🚀', '💡', '🎨', '⚡', '🏆', '🧪', '📣', '🌟', '🔥'];
 
-  const submit = () => {
+  const submit = async () => {
     if (!title.trim() || !brief.trim()) return;
-    onCreate({ id: uid(), title: title.trim(), brief: brief.trim(), icon, accent, createdAt: new Date().toISOString(), members: [] });
-    onClose();
+    setLoading(true);
+    try {
+      await onCreate({ title: title.trim(), brief: brief.trim(), icon, accent });
+      onClose();
+    } catch (error) {
+      console.error('Failed to create event:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -451,23 +478,41 @@ function CreateEventModal({ onClose, onCreate }: { onClose: () => void; onCreate
             ))}
           </div>
         </div>
-        <button type="button" onClick={submit} className="primary-button w-full bg-gradient-to-r from-emerald-400 to-cyan-500 text-slate-950">
-          <Plus className="h-5 w-5" /> Create quest
+        <button type="button" onClick={submit} disabled={loading} className="primary-button w-full bg-gradient-to-r from-emerald-400 to-cyan-500 text-slate-950 disabled:opacity-50">
+          {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-5 w-5" />}
+          {loading ? 'Creating...' : 'Create quest'}
         </button>
       </div>
     </Modal>
   );
 }
 
-function CreateMemberModal({ onClose, onCreate }: { onClose: () => void; onCreate: (member: Member) => void }) {
+function CreateMemberModal({ onClose, onCreate }: { onClose: () => void; onCreate: (member: Omit<DBMember, 'id' | 'createdAt' | 'points'>) => void }) {
   const [name, setName] = useState('');
   const [role, setRole] = useState('Creative player');
   const [avatar, setAvatar] = useState<Avatar>(avatars[0]);
+  const [loading, setLoading] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
     if (!name.trim()) return;
-    onCreate({ id: uid(), name: name.trim(), role: role.trim() || 'Creative player', avatar, points: 0, ideas: [], createdAt: new Date().toISOString() });
-    onClose();
+    setLoading(true);
+    try {
+      await onCreate({ 
+        name: name.trim(), 
+        role: role.trim() || 'Creative player', 
+        avatarId: avatar.id,
+        avatarIcon: avatar.icon,
+        avatarName: avatar.name,
+        avatarTrait: avatar.trait,
+        avatarGradient: avatar.gradient,
+        avatarRing: avatar.ring
+      });
+      onClose();
+    } catch (error) {
+      console.error('Failed to create member:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -508,30 +553,37 @@ function CreateMemberModal({ onClose, onCreate }: { onClose: () => void; onCreat
             Selected: <span className="font-bold text-white">{avatar.name}</span> - {avatar.trait}
           </p>
         </div>
-        <button type="button" onClick={submit} className="primary-button w-full bg-gradient-to-r from-fuchsia-400 to-violet-500 text-white">
-          <Folder className="h-5 w-5" /> Create folder
+        <button type="button" onClick={submit} disabled={loading} className="primary-button w-full bg-gradient-to-r from-fuchsia-400 to-violet-500 text-white disabled:opacity-50">
+          {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Folder className="h-5 w-5" />}
+          {loading ? 'Creating...' : 'Create folder'}
         </button>
       </div>
     </Modal>
   );
 }
 
-function CreateIdeaModal({ onClose, onCreate }: { onClose: () => void; onCreate: (idea: Idea) => void }) {
+function CreateIdeaModal({ onClose, onCreate }: { onClose: () => void; onCreate: (idea: Omit<DBIdea, 'id' | 'createdAt' | 'memberId'>) => void }) {
   const [title, setTitle] = useState('');
   const [thought, setThought] = useState('');
   const [tags, setTags] = useState('design, social');
+  const [loading, setLoading] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
     if (!title.trim() || !thought.trim()) return;
-    onCreate({
-      id: uid(),
-      title: title.trim(),
-      thought: thought.trim(),
-      tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean).slice(0, 4),
-      reactions: makeReactions(),
-      createdAt: new Date().toISOString(),
-    });
-    onClose();
+    setLoading(true);
+    try {
+      await onCreate({
+        title: title.trim(),
+        thought: thought.trim(),
+        tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean).slice(0, 4),
+        reactions: makeReactions(),
+      });
+      onClose();
+    } catch (error) {
+      console.error('Failed to create idea:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -553,8 +605,9 @@ function CreateIdeaModal({ onClose, onCreate }: { onClose: () => void; onCreate:
           <label className="mb-2 block text-sm font-bold text-white/70">Tags, comma separated</label>
           <input className="field" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="branding, reel, poster" />
         </div>
-        <button type="button" onClick={submit} className="primary-button w-full bg-gradient-to-r from-cyan-300 to-blue-500 text-slate-950">
-          <Send className="h-5 w-5" /> Upload idea
+        <button type="button" onClick={submit} disabled={loading} className="primary-button w-full bg-gradient-to-r from-cyan-300 to-blue-500 text-slate-950 disabled:opacity-50">
+          {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
+          {loading ? 'Uploading...' : 'Upload idea'}
         </button>
       </div>
     </Modal>
@@ -562,22 +615,96 @@ function CreateIdeaModal({ onClose, onCreate }: { onClose: () => void; onCreate:
 }
 
 export default function App() {
-  const [events, setEvents] = useState<CreativeEvent[]>(() => {
-    const saved = localStorage.getItem('ieee-creative-arena-v3');
-    return saved ? JSON.parse(saved) as CreativeEvent[] : seedEvents;
-  });
+  const [loading, setLoading] = useState(true);
+  const [events, setEvents] = useState<CreativeEvent[]>([]);
   const [route, setRoute] = useState<Route>({});
   const [modal, setModal] = useState<'event' | 'member' | 'idea' | null>(null);
   const [showBoard, setShowBoard] = useState(false);
   const [burst, setBurst] = useState(false);
 
+  // Real-time data subscriptions
   useEffect(() => {
-    localStorage.setItem('ieee-creative-arena-v3', JSON.stringify(events));
-  }, [events]);
+    let unsubscribeEvents: () => void;
+    let unsubscribers: (() => void)[] = [];
+
+    // Subscribe to events
+    unsubscribeEvents = subscribeToEvents((dbEvents) => {
+      const eventsWithMembers: CreativeEvent[] = [];
+      
+      dbEvents.forEach((dbEvent) => {
+        if (!dbEvent.id) return;
+        
+        const eventWithMembers: CreativeEvent = {
+          ...dbEvent,
+          id: dbEvent.id,
+          members: []
+        };
+        
+        // Subscribe to members for each event
+        const unsubMembers = subscribeToMembers(dbEvent.id, (dbMembers) => {
+          eventWithMembers.members = dbMembers.map(dbMember => ({
+            ...dbMember,
+            id: dbMember.id || '',
+            ideas: []
+          }));
+          
+          // Subscribe to ideas for each member
+          dbMembers.forEach((dbMember) => {
+            if (!dbMember.id) return;
+            
+            const unsubIdeas = subscribeToIdeas(dbEvent.id!, dbMember.id, (dbIdeas) => {
+              const memberIndex = eventWithMembers.members.findIndex(m => m.id === dbMember.id);
+              if (memberIndex !== -1) {
+                eventWithMembers.members[memberIndex].ideas = dbIdeas.map(idea => ({
+                  ...idea,
+                  id: idea.id || ''
+                }));
+              }
+              
+              // Update events state
+              setEvents(prev => {
+                const updated = [...prev];
+                const eventIndex = updated.findIndex(e => e.id === dbEvent.id);
+                if (eventIndex !== -1) {
+                  updated[eventIndex] = { ...eventWithMembers };
+                }
+                return updated;
+              });
+            });
+            
+            unsubscribers.push(unsubIdeas);
+          });
+          
+          // Update events state
+          setEvents(prev => {
+            const updated = [...prev];
+            const eventIndex = updated.findIndex(e => e.id === dbEvent.id);
+            if (eventIndex !== -1) {
+              updated[eventIndex] = { ...eventWithMembers };
+            } else {
+              updated.push({ ...eventWithMembers });
+            }
+            return updated;
+          });
+        });
+        
+        unsubscribers.push(unsubMembers);
+        eventsWithMembers.push(eventWithMembers);
+      });
+      
+      setEvents(eventsWithMembers);
+      setLoading(false);
+    });
+
+    return () => {
+      unsubscribeEvents?.();
+      unsubscribers.forEach(unsub => unsub());
+    };
+  }, []);
 
   const currentEvent = events.find((event) => event.id === route.eventId);
   const currentMember = currentEvent?.members.find((member) => member.id === route.memberId);
-  const allMembers = events.flatMap((event) => event.members);
+  const allMembers = events.flatMap((event) => event.members.map(member => ({ ...member, eventTitle: event.title })));
   const allIdeas = events.reduce((sum, event) => sum + eventIdeaCount(event), 0);
   const allReactions = events.reduce((sum, event) => sum + eventReactionCount(event), 0);
 
@@ -586,40 +713,43 @@ export default function App() {
     window.setTimeout(() => setBurst(false), 900);
   };
 
-  const addEvent = (event: CreativeEvent) => {
-    setEvents((previous) => [event, ...previous]);
+  const handleAddEvent = async (eventData: Omit<DBEvent, 'id' | 'createdAt'>) => {
+    await dbAddEvent(eventData);
     celebrate();
   };
 
-  const addMember = (member: Member) => {
-    if (!currentEvent) return;
-    setEvents((previous) => previous.map((event) => event.id === currentEvent.id ? { ...event, members: [member, ...event.members] } : event));
+  const handleAddMember = async (memberData: Omit<DBMember, 'id' | 'createdAt' | 'points'>) => {
+    if (!currentEvent?.id) return;
+    await dbAddMember(currentEvent.id, memberData);
     celebrate();
   };
 
-  const addIdea = (idea: Idea) => {
-    if (!currentEvent || !currentMember) return;
-    setEvents((previous) => previous.map((event) => event.id === currentEvent.id ? {
-      ...event,
-      members: event.members.map((member) => member.id === currentMember.id ? { ...member, points: member.points + 15, ideas: [idea, ...member.ideas] } : member),
-    } : event));
+  const handleAddIdea = async (ideaData: Omit<DBIdea, 'id' | 'createdAt' | 'memberId'>) => {
+    if (!currentEvent?.id || !currentMember?.id) return;
+    await dbAddIdea(currentEvent.id, currentMember.id, ideaData);
+    // Add 15 points for new idea
+    await updateMemberPoints(currentEvent.id, currentMember.id, currentMember.points + 15);
     celebrate();
   };
 
-  const reactToIdea = (ideaId: string, reactionIcon: string) => {
-    if (!currentEvent || !currentMember) return;
-    setEvents((previous) => previous.map((event) => event.id === currentEvent.id ? {
-      ...event,
-      members: event.members.map((member) => member.id === currentMember.id ? {
-        ...member,
-        points: member.points + 2,
-        ideas: member.ideas.map((idea) => idea.id === ideaId ? {
-          ...idea,
-          reactions: idea.reactions.map((reaction) => reaction.icon === reactionIcon ? { ...reaction, count: reaction.count + 1 } : reaction),
-        } : idea),
-      } : member),
-    } : event));
+  const handleReact = async (ideaId: string, reactionIcon: string) => {
+    if (!currentEvent?.id || !currentMember?.id) return;
+    
+    const idea = currentMember.ideas.find(i => i.id === ideaId);
+    if (!idea) return;
+    
+    const updatedReactions = idea.reactions.map(r => 
+      r.icon === reactionIcon ? { ...r, count: r.count + 1 } : r
+    );
+    
+    await updateIdeaReactions(currentEvent.id, currentMember.id, ideaId, updatedReactions);
+    // Add 2 points for reaction
+    await updateMemberPoints(currentEvent.id, currentMember.id, currentMember.points + 2);
   };
+
+  if (loading) {
+    return <LoadingScreen />;
+  }
 
   return (
     <div className="min-h-screen overflow-hidden text-white">
@@ -677,7 +807,7 @@ export default function App() {
                 <div className="relative grid gap-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-center">
                   <div>
                     <motion.div className="mb-5 inline-flex items-center gap-2 rounded-full border border-cyan-200/20 bg-cyan-200/10 px-4 py-2 text-sm font-bold text-cyan-100" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-                      <Sparkles className="h-4 w-4" /> No login. Everyone can play.
+                      <Sparkles className="h-4 w-4" /> Real-time powered by Firebase
                     </motion.div>
                     <motion.h1 className="font-display text-5xl font-black leading-[0.95] tracking-tight text-white sm:text-7xl lg:text-8xl" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
                       Creative<br />Quest Arena
@@ -799,25 +929,25 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                <Leaderboard events={events} scopedEventId={currentEvent.id} />
+                <Leaderboard members={currentEvent.members} title={`${currentEvent.title} Board`} />
               </section>
             </motion.div>
           )}
 
           {currentEvent && currentMember && (
             <motion.div key="member" initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -18 }}>
-              <section className={`relative overflow-hidden rounded-[2.4rem] border border-white/10 bg-gradient-to-br ${currentMember.avatar.gradient} p-6 shadow-2xl sm:p-8`}>
+              <section className={`relative overflow-hidden rounded-[2.4rem] border border-white/10 bg-gradient-to-br ${currentMember.avatarGradient} p-6 shadow-2xl sm:p-8`}>
                 <div className="absolute inset-0 bg-black/35" />
                 <div className="absolute right-8 top-8 hidden h-48 w-48 rounded-full border border-white/15 sm:block" />
                 <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-center gap-5">
                     <motion.div className="grid h-28 w-28 place-items-center rounded-[2rem] bg-white/20 text-7xl shadow-2xl backdrop-blur-xl" animate={{ y: [0, -8, 0], rotate: [0, 3, -3, 0] }} transition={{ duration: 3, repeat: Infinity }}>
-                      {currentMember.avatar.icon}
+                      {currentMember.avatarIcon}
                     </motion.div>
                     <div>
                       <p className="text-sm font-bold uppercase tracking-[0.3em] text-white/60">Member folder</p>
                       <h1 className="mt-2 font-display text-4xl font-black text-white sm:text-6xl">{currentMember.name}</h1>
-                      <p className="mt-2 text-white/70">{currentMember.role} - {currentMember.avatar.name}</p>
+                      <p className="mt-2 text-white/70">{currentMember.role} - {currentMember.avatarName}</p>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3 sm:w-72">
@@ -852,7 +982,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="grid gap-5 lg:grid-cols-2">
-                    {currentMember.ideas.map((idea) => <IdeaOrb key={idea.id} idea={idea} member={currentMember} onReact={(reaction) => reactToIdea(idea.id, reaction)} />)}
+                    {currentMember.ideas.map((idea) => <IdeaOrb key={idea.id} idea={idea} member={currentMember} onReact={(reaction) => handleReact(idea.id, reaction)} />)}
                   </div>
                 )}
               </section>
@@ -871,28 +1001,27 @@ export default function App() {
                   <X className="h-5 w-5" />
                 </button>
               </div>
-              <Leaderboard events={events} />
+              <Leaderboard members={allMembers} title="All Events" />
             </motion.aside>
           </motion.div>
         )}
       </AnimatePresence>
 
       <AnimatePresence>
-        {modal === 'event' && <CreateEventModal onClose={() => setModal(null)} onCreate={addEvent} />}
-        {modal === 'member' && currentEvent && <CreateMemberModal onClose={() => setModal(null)} onCreate={addMember} />}
-        {modal === 'idea' && currentMember && <CreateIdeaModal onClose={() => setModal(null)} onCreate={addIdea} />}
+        {modal === 'event' && <CreateEventModal onClose={() => setModal(null)} onCreate={handleAddEvent} />}
+        {modal === 'member' && currentEvent && <CreateMemberModal onClose={() => setModal(null)} onCreate={handleAddMember} />}
+        {modal === 'idea' && currentMember && <CreateIdeaModal onClose={() => setModal(null)} onCreate={handleAddIdea} />}
       </AnimatePresence>
 
       <footer className="relative z-10 border-t border-white/10 bg-[#070713]/60 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-4 py-6 sm:flex-row sm:px-6">
           <p className="text-sm text-white/35">Made with 💜 by IEEE Menoufia SB — Creative Quest Arena</p>
-          <button
-            type="button"
-            onClick={() => { localStorage.removeItem('ieee-creative-arena-v3'); setEvents([]); }}
-            className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-widest text-white/35 transition hover:border-red-400/40 hover:bg-red-500/10 hover:text-red-300"
-          >
-            Reset All Data
-          </button>
+          <div className="flex items-center gap-2 text-xs text-white/30">
+            <span className="inline-flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+              Firebase Connected
+            </span>
+          </div>
         </div>
       </footer>
     </div>
