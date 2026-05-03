@@ -1,6 +1,0 @@
-name = "ieee-menoufia-creative-arena"
-compatibility_date = "2024-01-01"
-database_id = "49e8ec8b-ebb4-461e-a67d-e96183587c3a"
-
-[site]
-bucket = "./dist"
