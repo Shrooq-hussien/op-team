@@ -10,4 +10,4 @@ database_id = "49e8ec8b-ebb4-461e-a67d-e96183587c3a"  # Replace after creating D
 
 # Environment variables
 [vars]
-FRONTEND_URL = "https://ieee-menoufia-creative-arena.pages.dev"
+FRONTEND_URL = "https://op-team.shrooqhussien2.workers.dev/
