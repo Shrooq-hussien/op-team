@@ -1,0 +1,17 @@
+{
+  "name": "ieee-creative-arena-api",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create ieee-creative-arena-db",
+    "db:init": "wrangler d1 execute ieee-creative-arena-db --file=../schema.sql",
+    "db:init:local": "wrangler d1 execute ieee-creative-arena-db --local --file=../schema.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.24.0"
+  }
+}

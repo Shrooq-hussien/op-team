@@ -23,20 +23,21 @@ import {
   X,
 } from 'lucide-react';
 
-// Import Firebase services
+// Import Cloudflare D1 API
 import { 
   DBEvent, 
   DBMember, 
-  DBIdea, 
-  subscribeToEvents, 
-  subscribeToMembers, 
-  subscribeToIdeas,
-  addEvent as dbAddEvent,
-  addMember as dbAddMember,
-  addIdea as dbAddIdea,
-  updateIdeaReactions,
-  updateMemberPoints
-} from './lib/db';
+  DBIdea,
+  pollEvents,
+  pollMembers,
+  pollIdeas,
+  createEvent as apiCreateEvent,
+  createMember as apiCreateMember,
+  createIdea as apiCreateIdea,
+  updateIdeaReactions as apiUpdateReactions,
+  updateMemberPoints as apiUpdatePoints,
+  fetchEvents
+} from './lib/api';
 
 type Avatar = {
   id: string;
@@ -53,18 +54,39 @@ type Reaction = {
   count: number;
 };
 
-type Idea = DBIdea & {
+type Idea = {
   id: string;
+  title: string;
+  thought: string;
+  tags: string[];
+  reactions: Reaction[];
+  createdAt: string;
+  memberId: string;
 };
 
-type Member = DBMember & {
+type Member = {
   id: string;
+  name: string;
+  role: string;
+  avatarId: string;
+  avatarIcon: string;
+  avatarName: string;
+  avatarTrait: string;
+  avatarGradient: string;
+  avatarRing: string;
+  points: number;
   ideas: Idea[];
+  createdAt: string;
 };
 
-type CreativeEvent = DBEvent & {
+type CreativeEvent = {
   id: string;
+  title: string;
+  brief: string;
+  icon: string;
+  accent: string;
   members: Member[];
+  createdAt: string;
 };
 
 type Route = {
@@ -113,6 +135,48 @@ const eventIdeaCount = (event: CreativeEvent) => event.members.reduce((sum, memb
 const eventReactionCount = (event: CreativeEvent) =>
   event.members.reduce((sum, member) => sum + member.ideas.reduce((ideaSum, idea) => ideaSum + totalIdeaReactions(idea), 0), 0);
 
+// Convert DB types to app types
+function dbEventToEvent(dbEvent: DBEvent, members: Member[] = []): CreativeEvent {
+  return {
+    id: dbEvent.id,
+    title: dbEvent.title,
+    brief: dbEvent.brief,
+    icon: dbEvent.icon,
+    accent: dbEvent.accent,
+    members,
+    createdAt: dbEvent.created_at,
+  };
+}
+
+function dbMemberToMember(dbMember: DBMember, ideas: Idea[] = []): Member {
+  return {
+    id: dbMember.id,
+    name: dbMember.name,
+    role: dbMember.role,
+    avatarId: dbMember.avatar_id,
+    avatarIcon: dbMember.avatar_icon,
+    avatarName: dbMember.avatar_name,
+    avatarTrait: dbMember.avatar_trait,
+    avatarGradient: dbMember.avatar_gradient,
+    avatarRing: dbMember.avatar_ring,
+    points: dbMember.points,
+    ideas,
+    createdAt: dbMember.created_at,
+  };
+}
+
+function dbIdeaToIdea(dbIdea: DBIdea): Idea {
+  return {
+    id: dbIdea.id,
+    title: dbIdea.title,
+    thought: dbIdea.thought,
+    tags: dbIdea.tags,
+    reactions: dbIdea.reactions,
+    createdAt: dbIdea.created_at,
+    memberId: dbIdea.member_id,
+  };
+}
+
 // Loading Component
 function LoadingScreen() {
   return (
@@ -125,7 +189,7 @@ function LoadingScreen() {
         <motion.div 
           className="grid h-20 w-20 place-items-center rounded-3xl bg-gradient-to-br from-cyan-300 via-fuchsia-400 to-yellow-300 text-slate-950 shadow-2xl shadow-fuchsia-500/30"
           animate={{ rotate: [0, 360] }}
-          transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+          transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
         >
           <Gamepad2 className="h-10 w-10" />
         </motion.div>
@@ -225,7 +289,7 @@ function Modal({ children, onClose }: { children: ReactNode; onClose: () => void
   );
 }
 
-function Leaderboard({ members, title }: { members: (Member & { eventTitle?: string })[]; title?: string }) {
+function Leaderboard({ members, title }: { members: Member[]; title?: string }) {
   const sorted = [...members].sort((a, b) => b.points - a.points).slice(0, 8);
 
   return (
@@ -263,7 +327,6 @@ function Leaderboard({ members, title }: { members: (Member & { eventTitle?: str
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate font-bold text-white">{member.name}</p>
-                {member.eventTitle && <p className="truncate text-xs text-white/40">{member.eventTitle}</p>}
               </div>
               <div className="rounded-2xl bg-black/25 px-3 py-2 text-right">
                 <p className="font-display text-sm font-black text-yellow-200">{member.points}</p>
@@ -424,7 +487,7 @@ function IdeaOrb({ idea, member, onReact }: { idea: Idea; member: Member; onReac
   );
 }
 
-function CreateEventModal({ onClose, onCreate }: { onClose: () => void; onCreate: (event: Omit<DBEvent, 'id' | 'createdAt'>) => void }) {
+function CreateEventModal({ onClose, onCreate }: { onClose: () => void; onCreate: (event: { title: string; brief: string; icon: string; accent: string }) => Promise<void> }) {
   const [title, setTitle] = useState('');
   const [brief, setBrief] = useState('');
   const [icon, setIcon] = useState('🎮');
@@ -458,7 +521,7 @@ function CreateEventModal({ onClose, onCreate }: { onClose: () => void; onCreate
         </div>
         <div>
           <label className="mb-2 block text-sm font-bold text-white/70">Mission brief</label>
-          <textarea className="field min-h-28 resize-none" value={brief} onChange={(event) => setBrief(event.target.value)} placeholder="What should the creative team upload and evaluate?" />
+          <textarea className="field min-h-28 resize-none" value={brief} onChange={(event) => setBrief(event.target.value)} placeholder="What should the Operation team upload and evaluate?" />
         </div>
         <div>
           <label className="mb-2 block text-sm font-bold text-white/70">Icon</label>
@@ -487,9 +550,9 @@ function CreateEventModal({ onClose, onCreate }: { onClose: () => void; onCreate
   );
 }
 
-function CreateMemberModal({ onClose, onCreate }: { onClose: () => void; onCreate: (member: Omit<DBMember, 'id' | 'createdAt' | 'points'>) => void }) {
+function CreateMemberModal({ onClose, onCreate }: { onClose: () => void; onCreate: (member: { name: string; role: string; avatarId: string; avatarIcon: string; avatarName: string; avatarTrait: string; avatarGradient: string; avatarRing: string }) => Promise<void> }) {
   const [name, setName] = useState('');
-  const [role, setRole] = useState('Creative player');
+  const [role, setRole] = useState('Operation player');
   const [avatar, setAvatar] = useState<Avatar>(avatars[0]);
   const [loading, setLoading] = useState(false);
 
@@ -499,7 +562,7 @@ function CreateMemberModal({ onClose, onCreate }: { onClose: () => void; onCreat
     try {
       await onCreate({ 
         name: name.trim(), 
-        role: role.trim() || 'Creative player', 
+        role: role.trim() || 'Operation player', 
         avatarId: avatar.id,
         avatarIcon: avatar.icon,
         avatarName: avatar.name,
@@ -528,8 +591,8 @@ function CreateMemberModal({ onClose, onCreate }: { onClose: () => void; onCreat
             <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" />
           </div>
           <div>
-            <label className="mb-2 block text-sm font-bold text-white/70">Creative role</label>
-            <input className="field" value={role} onChange={(event) => setRole(event.target.value)} placeholder="Designer, writer..." />
+            <label className="mb-2 block text-sm font-bold text-white/70">Operation role</label>
+            <input className="field" value={role} onChange={(event) => setRole(event.target.value)} placeholder="Designer, coordinator..." />
           </div>
         </div>
         <div>
@@ -562,10 +625,10 @@ function CreateMemberModal({ onClose, onCreate }: { onClose: () => void; onCreat
   );
 }
 
-function CreateIdeaModal({ onClose, onCreate }: { onClose: () => void; onCreate: (idea: Omit<DBIdea, 'id' | 'createdAt' | 'memberId'>) => void }) {
+function CreateIdeaModal({ onClose, onCreate }: { onClose: () => void; onCreate: (idea: { title: string; thought: string; tags: string[]; reactions: Reaction[] }) => Promise<void> }) {
   const [title, setTitle] = useState('');
   const [thought, setThought] = useState('');
-  const [tags, setTags] = useState('design, social');
+  const [tags, setTags] = useState('operation, events');
   const [loading, setLoading] = useState(false);
 
   const submit = async () => {
@@ -603,7 +666,7 @@ function CreateIdeaModal({ onClose, onCreate }: { onClose: () => void; onCreate:
         </div>
         <div>
           <label className="mb-2 block text-sm font-bold text-white/70">Tags, comma separated</label>
-          <input className="field" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="branding, reel, poster" />
+          <input className="field" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="operation, events" />
         </div>
         <button type="button" onClick={submit} disabled={loading} className="primary-button w-full bg-gradient-to-r from-cyan-300 to-blue-500 text-slate-950 disabled:opacity-50">
           {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
@@ -622,89 +685,75 @@ export default function App() {
   const [showBoard, setShowBoard] = useState(false);
   const [burst, setBurst] = useState(false);
 
-  // Real-time data subscriptions
+  // Load events instantly on mount
   useEffect(() => {
-    let unsubscribeEvents: () => void;
-    let unsubscribers: (() => void)[] = [];
+    let active = true;
+    const initialLoad = async () => {
+      try {
+        const dbEvents = await fetchEvents();
+        if (active) {
+          setEvents(dbEvents.map(e => dbEventToEvent(e)));
+          setLoading(false);
+        }
+      } catch (err) {
+        if (active) setLoading(false);
+      }
+    };
+    initialLoad();
 
-    // Subscribe to events
-    unsubscribeEvents = subscribeToEvents((dbEvents) => {
-      const eventsWithMembers: CreativeEvent[] = [];
-      
-      dbEvents.forEach((dbEvent) => {
-        if (!dbEvent.id) return;
-        
-        const eventWithMembers: CreativeEvent = {
-          ...dbEvent,
-          id: dbEvent.id,
-          members: []
-        };
-        
-        // Subscribe to members for each event
-        const unsubMembers = subscribeToMembers(dbEvent.id, (dbMembers) => {
-          eventWithMembers.members = dbMembers.map(dbMember => ({
-            ...dbMember,
-            id: dbMember.id || '',
-            ideas: []
-          }));
-          
-          // Subscribe to ideas for each member
-          dbMembers.forEach((dbMember) => {
-            if (!dbMember.id) return;
-            
-            const unsubIdeas = subscribeToIdeas(dbEvent.id!, dbMember.id, (dbIdeas) => {
-              const memberIndex = eventWithMembers.members.findIndex(m => m.id === dbMember.id);
-              if (memberIndex !== -1) {
-                eventWithMembers.members[memberIndex].ideas = dbIdeas.map(idea => ({
-                  ...idea,
-                  id: idea.id || ''
-                }));
-              }
-              
-              // Update events state
-              setEvents(prev => {
-                const updated = [...prev];
-                const eventIndex = updated.findIndex(e => e.id === dbEvent.id);
-                if (eventIndex !== -1) {
-                  updated[eventIndex] = { ...eventWithMembers };
-                }
-                return updated;
-              });
-            });
-            
-            unsubscribers.push(unsubIdeas);
-          });
-          
-          // Update events state
-          setEvents(prev => {
-            const updated = [...prev];
-            const eventIndex = updated.findIndex(e => e.id === dbEvent.id);
-            if (eventIndex !== -1) {
-              updated[eventIndex] = { ...eventWithMembers };
-            } else {
-              updated.push({ ...eventWithMembers });
-            }
-            return updated;
-          });
-        });
-        
-        unsubscribers.push(unsubMembers);
-        eventsWithMembers.push(eventWithMembers);
-      });
-      
-      setEvents(eventsWithMembers);
-      setLoading(false);
-    });
-
+    const unsubscribe = pollEvents((dbEvents) => {
+      setEvents(dbEvents.map(e => dbEventToEvent(e)));
+    }, 2500);
+    
     return () => {
-      unsubscribeEvents?.();
-      unsubscribers.forEach(unsub => unsub());
+      active = false;
+      unsubscribe();
     };
   }, []);
 
+  // Poll for members when event is selected
+  useEffect(() => {
+    if (!route.eventId) return;
+    
+    const unsubscribe = pollMembers(route.eventId, (dbMembers) => {
+      setEvents(prev => prev.map(event => {
+        if (event.id !== route.eventId) return event;
+        return {
+          ...event,
+          members: dbMembers.map(m => dbMemberToMember(m))
+        };
+      }));
+    }, 2500);
+    
+    return unsubscribe;
+  }, [route.eventId]);
+
+  // Poll for ideas when member is selected
+  useEffect(() => {
+    if (!route.eventId || !route.memberId) return;
+    
+    const unsubscribe = pollIdeas(route.eventId, route.memberId, (dbIdeas) => {
+      setEvents(prev => prev.map(event => {
+        if (event.id !== route.eventId) return event;
+        return {
+          ...event,
+          members: event.members.map(member => {
+            if (member.id !== route.memberId) return member;
+            return {
+              ...member,
+              ideas: dbIdeas.map(i => dbIdeaToIdea(i))
+            };
+          })
+        };
+      }));
+    }, 2500);
+    
+    return unsubscribe;
+  }, [route.eventId, route.memberId]);
+
   const currentEvent = events.find((event) => event.id === route.eventId);
   const currentMember = currentEvent?.members.find((member) => member.id === route.memberId);
-  const allMembers = events.flatMap((event) => event.members.map(member => ({ ...member, eventTitle: event.title })));
+  const allMembers = events.flatMap((event) => event.members);
   const allIdeas = events.reduce((sum, event) => sum + eventIdeaCount(event), 0);
   const allReactions = events.reduce((sum, event) => sum + eventReactionCount(event), 0);
 
@@ -713,22 +762,22 @@ export default function App() {
     window.setTimeout(() => setBurst(false), 900);
   };
 
-  const handleAddEvent = async (eventData: Omit<DBEvent, 'id' | 'createdAt'>) => {
-    await dbAddEvent(eventData);
+  const handleAddEvent = async (eventData: { title: string; brief: string; icon: string; accent: string }) => {
+    await apiCreateEvent(eventData);
     celebrate();
   };
 
-  const handleAddMember = async (memberData: Omit<DBMember, 'id' | 'createdAt' | 'points'>) => {
+  const handleAddMember = async (memberData: { name: string; role: string; avatarId: string; avatarIcon: string; avatarName: string; avatarTrait: string; avatarGradient: string; avatarRing: string }) => {
     if (!currentEvent?.id) return;
-    await dbAddMember(currentEvent.id, memberData);
+    await apiCreateMember(currentEvent.id, memberData);
     celebrate();
   };
 
-  const handleAddIdea = async (ideaData: Omit<DBIdea, 'id' | 'createdAt' | 'memberId'>) => {
+  const handleAddIdea = async (ideaData: { title: string; thought: string; tags: string[]; reactions: Reaction[] }) => {
     if (!currentEvent?.id || !currentMember?.id) return;
-    await dbAddIdea(currentEvent.id, currentMember.id, ideaData);
+    await apiCreateIdea(currentEvent.id, currentMember.id, ideaData);
     // Add 15 points for new idea
-    await updateMemberPoints(currentEvent.id, currentMember.id, currentMember.points + 15);
+    await apiUpdatePoints(currentEvent.id, currentMember.id, currentMember.points + 15);
     celebrate();
   };
 
@@ -742,9 +791,9 @@ export default function App() {
       r.icon === reactionIcon ? { ...r, count: r.count + 1 } : r
     );
     
-    await updateIdeaReactions(currentEvent.id, currentMember.id, ideaId, updatedReactions);
+    await apiUpdateReactions(currentEvent.id, currentMember.id, ideaId, updatedReactions);
     // Add 2 points for reaction
-    await updateMemberPoints(currentEvent.id, currentMember.id, currentMember.points + 2);
+    await apiUpdatePoints(currentEvent.id, currentMember.id, currentMember.points + 2);
   };
 
   if (loading) {
@@ -783,7 +832,7 @@ export default function App() {
             </div>
             <div className="min-w-0">
               <p className="truncate font-display text-lg font-black uppercase tracking-wide sm:text-2xl">IEEE Menoufia SB</p>
-              <p className="truncate text-xs font-semibold uppercase tracking-[0.24em] text-cyan-100/45">Creative Quest Arena</p>
+              <p className="truncate text-xs font-semibold uppercase tracking-[0.24em] text-cyan-100/45">Operation Quest Arena</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -807,10 +856,10 @@ export default function App() {
                 <div className="relative grid gap-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-center">
                   <div>
                     <motion.div className="mb-5 inline-flex items-center gap-2 rounded-full border border-cyan-200/20 bg-cyan-200/10 px-4 py-2 text-sm font-bold text-cyan-100" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-                      <Sparkles className="h-4 w-4" /> Real-time powered by Firebase
+                      <Sparkles className="h-4 w-4" /> Cloudflare Edge Connected
                     </motion.div>
                     <motion.h1 className="font-display text-5xl font-black leading-[0.95] tracking-tight text-white sm:text-7xl lg:text-8xl" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
-                      Creative<br />Quest Arena
+                      Operation<br />Quest Arena
                     </motion.h1>
                     <motion.p className="mt-6 max-w-2xl text-lg leading-8 text-white/60" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
                       Create events, let every member own a public folder, upload wild thoughts, react to ideas, and climb the leaderboard like a game.
@@ -908,7 +957,7 @@ export default function App() {
                   <div className="mb-5 flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-bold uppercase tracking-[0.3em] text-white/35">Open folders</p>
-                      <h2 className="mt-2 font-display text-3xl font-black text-white">Creative Players</h2>
+                      <h2 className="mt-2 font-display text-3xl font-black text-white">Operation Players</h2>
                     </div>
                     <button type="button" onClick={() => setModal('member')} className="primary-button bg-gradient-to-r from-fuchsia-400 to-violet-500 text-white">
                       <Plus className="h-4 w-4" /> Join
@@ -1015,11 +1064,11 @@ export default function App() {
 
       <footer className="relative z-10 border-t border-white/10 bg-[#070713]/60 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-4 py-6 sm:flex-row sm:px-6">
-          <p className="text-sm text-white/35">Made with 💜 by IEEE Menoufia SB — Creative Quest Arena</p>
+          <p className="text-sm text-white/35">Made with 💜 by IEEE Menoufia SB — Operation Quest Arena</p>
           <div className="flex items-center gap-2 text-xs text-white/30">
             <span className="inline-flex items-center gap-1">
               <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-              Firebase Connected
+              Cloudflare D1
             </span>
           </div>
         </div>
